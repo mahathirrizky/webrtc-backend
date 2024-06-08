@@ -1,0 +1,147 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC SFU</title>
+    <style>
+        .video-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .video-label {
+            font-size: 24px;
+            margin: 10px;
+        }
+        .video {
+            width: 320px;
+            height: 240px;
+            background-color: black;
+            margin: 10px;
+        }
+        .controls {
+            margin: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebRTC SFU</h1>
+    <div class="controls">
+        <input type="text" id="roomId" placeholder="Enter Room ID">
+        <button id="startButton">Start</button>
+    </div>
+    <div class="video-container">
+        <div class="video-label">Local Video</div>
+        <video id="localVideo" class="video" autoplay playsinline></video>
+        <div class="video-label">Remote Video</div>
+        <div id="remoteVideos"></div>
+        <div class="video-label">Logs</div>
+        <div id="logs"></div>
+    </div>
+
+    <script>
+        document.getElementById('startButton').addEventListener('click', start);
+
+        let localVideo = document.getElementById('localVideo');
+        let remoteVideos = document.getElementById('remoteVideos');
+        let logs = document.getElementById('logs');
+
+        let localStream;
+        let peerConnection;
+        let webSocket;
+
+        async function start() {
+            const roomId = document.getElementById('roomId').value;
+            if (!roomId) {
+                alert('Please enter a room ID');
+                return;
+            }
+
+            const wsUrl = `wss://60e7-2400-9800-8c5-bb3-7cae-a61f-2f3a-516c.ngrok-free.app/websocket/${roomId}`; // Use wss:// for secure WebSocket
+            webSocket = new WebSocket(wsUrl);
+
+            peerConnection = new RTCPeerConnection();
+
+            webSocket.onopen = async () => {
+                console.log('WebSocket connection opened');
+                log('WebSocket connection opened');
+
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        log('Sending ICE candidate');
+                        webSocket.send(JSON.stringify({
+                            event: 'candidate',
+                            data: JSON.stringify(event.candidate)
+                        }));
+                    }
+                };
+
+                peerConnection.ontrack = (event) => {
+                    if (event.streams.length > 0) {
+                        let remoteStream = event.streams[0];
+                        console.log(remoteStream)
+                        // Check if the stream is already added
+                        if (!document.querySelector(`video[data-stream-id="${remoteStream.id}"]`)) {
+                            let remoteVideo = document.createElement('video');
+                            remoteVideo.srcObject = remoteStream;
+                            remoteVideo.autoplay = true;
+                            remoteVideo.playsinline = true;
+                            remoteVideo.classList.add('video');
+                            remoteVideo.setAttribute('data-stream-id', remoteStream.id);
+                            remoteVideos.appendChild(remoteVideo);
+                            log('Added remote video stream');
+                        }
+                    }
+                };
+            };
+
+            webSocket.onmessage = async (event) => {
+                let message = JSON.parse(event.data);
+                log(`WebSocket message received: ${message.event}`);
+                switch (message.event) {
+                    case 'offer':
+                        log('Received offer');
+                        let offer = JSON.parse(message.data);
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                        let answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        webSocket.send(JSON.stringify({
+                            event: 'answer',
+                            data: JSON.stringify(answer)
+                        }));
+                        log('Sent answer');
+                        break;
+                    case 'candidate':
+                        log('Received ICE candidate');
+                        let candidate = JSON.parse(message.data);
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                        break;
+                }
+            };
+
+            webSocket.onclose = () => {
+                console.log('WebSocket connection closed');
+                log('WebSocket connection closed');
+            };
+
+            webSocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                log('WebSocket error:', error);
+            };
+        }
+
+        function log(message) {
+            logs.innerHTML += `${message}<br>`;
+        }
+    </script>
+</body>
+</html>
